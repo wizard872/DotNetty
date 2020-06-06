@@ -169,7 +169,24 @@ namespace DotNetty.Transport.Channels
             var newParamTypes = new Type[paramTypes.Length + 1];
             newParamTypes[0] = typeof(IChannelHandlerContext);
             Array.Copy(paramTypes, 0, newParamTypes, 1, paramTypes.Length);
-            return handlerType.GetMethod(methodName, newParamTypes).GetCustomAttribute<SkipAttribute>(false) != null;
+
+            if (handlerType != null)
+            {
+                MethodInfo methodInfo = handlerType.GetMethod(methodName, newParamTypes);
+                if (methodInfo != null)
+                {
+                    return methodInfo.GetCustomAttribute<SkipAttribute>(false) != null;
+                }
+                else
+                {
+                    return false;
+                }
+                //return handlerType.GetMethod(methodName, newParamTypes).GetCustomAttribute<SkipAttribute>(false) != null;
+            }
+            else
+            {
+                return false;
+            }
         }
 
         internal volatile AbstractChannelHandlerContext Next;

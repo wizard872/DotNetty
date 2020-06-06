@@ -86,6 +86,7 @@ namespace DotNetty.Transport.Channels.Sockets
                 AbstractSocketByteChannel ch = this.Channel;
                 if ((ch.ResetState(StateFlags.ReadScheduled) & StateFlags.Active) == 0)
                 {
+                    ch.Pipeline.FireExceptionCaught(new Exception("AbstractSocketByteChannel::FinishRead() TCP Receive Disabled.\n(ch.ResetState(StateFlags.ReadScheduled) & StateFlags.Active) == 0"));
                     return; // read was signaled as a result of channel closure
                 }
                 IChannelConfiguration config = ch.Configuration;

@@ -176,7 +176,7 @@ namespace DotNetty.Handlers.Tls
             }
         }
 
-        protected override void Decode(IChannelHandlerContext context, IByteBuffer input, List<object> output)
+        protected internal override void Decode(IChannelHandlerContext context, IByteBuffer input, List<object> output)
         {
             int startOffset = input.ReaderIndex;
             int endOffset = input.WriterIndex;

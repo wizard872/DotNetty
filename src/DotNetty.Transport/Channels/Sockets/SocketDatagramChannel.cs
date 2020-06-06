@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
+
 namespace DotNetty.Transport.Channels.Sockets
 {
     using System;
@@ -26,6 +27,8 @@ namespace DotNetty.Transport.Channels.Sockets
         readonly DefaultDatagramChannelConfig config;
         readonly IPEndPoint anyRemoteEndPoint;
 
+        private bool isConnected;
+
         public SocketDatagramChannel()
             : this(new Socket(SocketType.Dgram, ProtocolType.Udp))
         {
@@ -39,6 +42,7 @@ namespace DotNetty.Transport.Channels.Sockets
         public SocketDatagramChannel(Socket socket)
             : base(null, socket)
         {
+            isConnected = false;
             this.config = new DefaultDatagramChannelConfig(this, socket);
             this.anyRemoteEndPoint = new IPEndPoint(
                 socket.AddressFamily == AddressFamily.InterNetwork ? IPAddress.Any : IPAddress.IPv6Any,
@@ -69,18 +73,25 @@ namespace DotNetty.Transport.Channels.Sockets
             {
                 this.DoBind(localAddress);
             }
+            else
+            {
+                this.DoBind(new IPEndPoint(IPAddress.Any, 0));
+            }
 
             bool success = false;
             try
             {
                 this.Socket.Connect(remoteAddress);
                 success = true;
+                
+                this.isConnected = true;
                 return true;
             }
             finally
             {
                 if (!success)
                 {
+                    this.isConnected = false;
                     this.DoClose();
                 }
             }
@@ -97,42 +108,67 @@ namespace DotNetty.Transport.Channels.Sockets
         {
             if (this.TryResetState(StateFlags.Open | StateFlags.Active))
             {
+                this.isConnected = false;
                 this.Socket.Dispose();
             }
         }
 
         protected override void ScheduleSocketRead()
         {
-            SocketChannelAsyncOperation operation = this.ReadOperation;
-            operation.RemoteEndPoint = this.anyRemoteEndPoint;
+            try
+            {
+                SocketChannelAsyncOperation operation = this.ReadOperation;
+                operation.RemoteEndPoint = this.anyRemoteEndPoint;
 
-            IRecvByteBufAllocatorHandle handle = this.Unsafe.RecvBufAllocHandle;
-            IByteBuffer buffer = handle.Allocate(this.config.Allocator);
-            handle.AttemptedBytesRead = buffer.WritableBytes;
-            operation.UserToken = buffer;
-
-            ArraySegment<byte> bytes = buffer.GetIoBuffer(0, buffer.WritableBytes);
-            operation.SetBuffer(bytes.Array, bytes.Offset, bytes.Count);
-
-            bool pending;
+                IRecvByteBufAllocatorHandle handle = this.Unsafe.RecvBufAllocHandle;
+                IByteBuffer buffer = handle.Allocate(this.config.Allocator);
+                handle.AttemptedBytesRead = buffer.WritableBytes;
+                operation.UserToken = buffer;
+                
+                ArraySegment<byte> bytes = buffer.GetIoBuffer(0, buffer.WritableBytes);
+                operation.SetBuffer(bytes.Array, bytes.Offset, bytes.Count);
+                
+                bool pending;
 #if NETSTANDARD1_3
             pending = this.Socket.ReceiveFromAsync(operation);
 #else
-            if (ExecutionContext.IsFlowSuppressed())
-            {
-                pending = this.Socket.ReceiveFromAsync(operation);
-            }
-            else
-            {
-                using (ExecutionContext.SuppressFlow())
+                if (this.isConnected)
                 {
-                    pending = this.Socket.ReceiveFromAsync(operation);
+                    if (ExecutionContext.IsFlowSuppressed())
+                    {
+                        pending = this.Socket.ReceiveAsync(operation);
+                    }
+                    else
+                    {
+                        using (ExecutionContext.SuppressFlow())
+                        {
+                            pending = this.Socket.ReceiveAsync(operation);
+                        }
+                    }
+                }
+                else
+                {
+                    if (ExecutionContext.IsFlowSuppressed())
+                    {
+                        pending = this.Socket.ReceiveFromAsync(operation);
+                    }
+                    else
+                    {
+                        using (ExecutionContext.SuppressFlow())
+                        {
+                            pending = this.Socket.ReceiveFromAsync(operation);
+                        }
+                    }
+                }
+#endif
+                if (!pending)
+                {
+                    this.EventLoop.Execute(ReceiveFromCompletedSyncCallback, this.Unsafe, operation);
                 }
             }
-#endif
-            if (!pending)
+            catch (Exception e)
             {
-                this.EventLoop.Execute(ReceiveFromCompletedSyncCallback, this.Unsafe, operation);
+                this.Pipeline.FireExceptionCaught(e);
             }
         }
 
@@ -141,14 +177,15 @@ namespace DotNetty.Transport.Channels.Sockets
             Contract.Requires(buf != null);
 
             SocketChannelAsyncOperation operation = this.ReadOperation;
-            var data = (IByteBuffer)operation.UserToken;
+            IByteBuffer data = (IByteBuffer)operation.UserToken;
             bool free = true;
 
             try
             {
                 IRecvByteBufAllocatorHandle handle = this.Unsafe.RecvBufAllocHandle;
-
+                
                 int received = operation.BytesTransferred;
+                
                 if (received <= 0)
                 {
                     return 0;
@@ -159,7 +196,6 @@ namespace DotNetty.Transport.Channels.Sockets
                 EndPoint remoteAddress = operation.RemoteEndPoint;
                 buf.Add(new DatagramPacket(data, remoteAddress, this.LocalAddress));
                 free = false;
-
                 return 1;
             }
             finally
@@ -194,6 +230,7 @@ namespace DotNetty.Transport.Channels.Sockets
             SocketChannelAsyncOperation operation = this.PrepareWriteOperation(data.GetIoBuffer(data.ReaderIndex, length));
             operation.RemoteEndPoint = envelope.Recipient;
             this.SetState(StateFlags.WriteScheduled);
+            
             bool pending = this.Socket.SendToAsync(operation);
             if (!pending)
             {
@@ -242,8 +279,17 @@ namespace DotNetty.Transport.Channels.Sockets
             }
 
             ArraySegment<byte> bytes = data.GetIoBuffer(data.ReaderIndex, length);
-            int writtenBytes = this.Socket.SendTo(bytes.Array, bytes.Offset, bytes.Count, SocketFlags.None, remoteAddress);
-
+            
+            int writtenBytes = 0;
+            
+            if (this.isConnected)
+            {
+                writtenBytes = this.Socket.Send(bytes.Array, bytes.Offset, bytes.Count, SocketFlags.None);
+            }
+            else
+            {
+                writtenBytes = this.Socket.SendTo(bytes.Array, bytes.Offset, bytes.Count, SocketFlags.None, remoteAddress);
+            }
             return writtenBytes > 0;
         }
 

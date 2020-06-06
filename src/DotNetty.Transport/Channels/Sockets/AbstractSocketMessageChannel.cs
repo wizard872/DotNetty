@@ -41,10 +41,13 @@ namespace DotNetty.Transport.Channels.Sockets
                 Contract.Assert(this.channel.EventLoop.InEventLoop);
 
                 AbstractSocketMessageChannel ch = this.Channel;
+                
                 if ((ch.ResetState(StateFlags.ReadScheduled) & StateFlags.Active) == 0)
                 {
+                    ch.Pipeline.FireExceptionCaught(new Exception("AbstractSocketMessageChannel::FinishRead() UDP Receive Disabled.\n(ch.ResetState(StateFlags.ReadScheduled) & StateFlags.Active) == 0"));
                     return; // read was signaled as a result of channel closure
                 }
+                
                 IChannelConfiguration config = ch.Configuration;
 
                 IChannelPipeline pipeline = ch.Pipeline;
@@ -121,6 +124,13 @@ namespace DotNetty.Transport.Channels.Sockets
                     if (!closed && (ch.ReadPending || config.AutoRead))
                     {
                         ch.DoBeginRead();
+                    }
+                    else
+                    {
+                        if (!closed)
+                        {
+                            ch.DoBeginRead();
+                        }
                     }
                 }
             }
